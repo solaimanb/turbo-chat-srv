@@ -3,8 +3,8 @@ import http from "http";
 import { Server } from "socket.io";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
+import cors from "cors";
 import config from "./config";
-import cors = require("cors");
 
 // Load environment variables
 dotenv.config();
@@ -15,7 +15,7 @@ const app = express();
 // Enable CORS for Express
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN,
+    origin: process.env.CORS_ORIGIN || "*",
     methods: ["GET", "POST"],
   })
 );
@@ -26,9 +26,10 @@ const server = http.createServer(app);
 // Initialize Socket.IO with CORS configuration
 const io = new Server(server, {
   cors: {
-    origin: process.env.CORS_ORIGIN,
+    origin: process.env.CORS_ORIGIN || "*",
     methods: ["GET", "POST"],
   },
+  transports: ["websocket"],
 });
 
 // Handle Socket.IO connection errors
@@ -58,53 +59,69 @@ async function connectToDB() {
 
 // Initialize Socket.IO logic
 function initializeSocket(io: Server) {
-  const activeUsers: { [userId: string]: string } = {};
+  const activeUsers: { [userId: string]: string } = {}; // Tracks active users
 
   io.on("connection", (socket) => {
     console.log(`⚡ A user connected: ${socket.id}`);
 
     // Handle joining a room
-    socket.on("join-room", ({ userId, role }) => {
-      if (!userId || !role) {
-        console.error("Invalid join-room data");
-        return;
-      }
+    socket.on(
+      "join-room",
+      ({ userId, role }: { userId: string; role: string }) => {
+        if (!userId || !role) {
+          console.error("Invalid join-room data");
+          return;
+        }
 
-      socket.join(userId);
-      activeUsers[userId] = role;
-      console.log(`👤 User ${userId} (${role}) joined room`);
+        socket.join(userId); // Join the user's room
+        activeUsers[userId] = role; // Track the user's role
+        console.log(`👤 User ${userId} (${role}) joined room`);
 
-      // Notify all users in the room
-      if (role === "mentee") {
-        console.log(`📣 Broadcasting mentee-joined event for user: ${userId}`);
-        io.emit("mentee-joined", { userId });
+        // Notify all users in the room
+        if (role === "mentee") {
+          console.log(
+            `📣 Broadcasting mentee-joined event for user: ${userId}`
+          );
+          io.emit("mentee-joined", { userId });
+        }
       }
-    });
+    );
 
     // Handle chat messages
-    socket.on("send-message", ({ toUserId, message }) => {
-      if (!toUserId || !message) {
-        console.error("Invalid send-message data");
-        return;
-      }
+    socket.on(
+      "send-message",
+      ({ toUserId, message }: { toUserId: string; message: string }) => {
+        if (!toUserId || !message) {
+          console.error("Invalid send-message data");
+          return;
+        }
 
-      console.log(`💬 Message received in room - ${message}`);
-      io.to(toUserId).emit("receive-message", { sender: socket.id, message });
-    });
+        console.log(`💬 Message received in room - ${message}`);
+        io.to(toUserId).emit("receive-message", { sender: socket.id, message });
+      }
+    );
 
     // Handle voice call requests
-    socket.on("initiate-call", ({ callerId, calleeId }) => {
-      if (!callerId || !calleeId) {
-        console.error("Invalid initiate-call data");
-        return;
-      }
+    socket.on(
+      "initiate-call",
+      ({ callerId, calleeId }: { callerId: string; calleeId: string }) => {
+        if (!callerId || !calleeId) {
+          console.error("Invalid initiate-call data");
+          return;
+        }
 
-      console.log(`📞 Call initiated from ${callerId} to ${calleeId}`);
-      io.to(calleeId).emit("incoming-call", { callerId });
-    });
+        console.log(`📞 Call initiated from ${callerId} to ${calleeId}`);
+        io.to(calleeId).emit("incoming-call", { callerId });
+      }
+    );
 
     // Handle WebRTC signaling
     socket.on("call-signal", ({ toUserId, signal }) => {
+      console.log("Getting ToUserId and Signal at - socket.on > call-signal", {
+        toUserId,
+        signal,
+      });
+
       if (!toUserId || !signal) {
         console.error("Invalid call-signal data");
         return;
@@ -114,30 +131,40 @@ function initializeSocket(io: Server) {
       io.to(toUserId).emit("call-signal", { fromUserId: socket.id, signal });
     });
 
+    // Handle ICE candidates
+    socket.on(
+      "",
+      ({ toUserId, candidate }) => {
+        console.log("Received ICE candidate at - socket.on > ice-candidate:", candidate);
+
+        if (!toUserId || !candidate) {
+          console.error("Invalid ice-candidate data");
+          return;
+        }
+
+        console.log(
+          `🧊 ICE Candidate from ${socket.id} to ${toUserId}`,
+          candidate
+        );
+        io.to(toUserId).emit("ice-candidate", { candidate });
+      }
+    );
+
     // Handle WebRTC answer
-    socket.on("call-answer", ({ toUserId, answer }) => {
-      if (!toUserId || !answer) {
+    socket.on("call-answer", ({ calleeId, callerId, answer }) => {
+      if (!callerId || !answer) {
         console.error("Invalid call-answer data");
         return;
       }
 
-      console.log(`📞 Call Answer from ${socket.id} to ${toUserId}`);
-      io.to(toUserId).emit("call-answer", { answer });
-    });
-
-    // Handle ICE candidates
-    socket.on("ice-candidate", ({ toUserId, candidate }) => {
-      if (!toUserId || !candidate) {
-        console.error("Invalid ice-candidate data");
-        return;
-      }
-
-      console.log(`🧊 ICE Candidate from ${socket.id} to ${toUserId}`);
-      io.to(toUserId).emit("ice-candidate", { candidate });
+      console.log(`socket.on 
+      "call-answer" - 📞 Call Answer from ${calleeId} to ${callerId}`);
+      io.to(callerId).emit("call-answered", { answer });
+      console.log("call-answered emitted to caller", { callerId });
     });
 
     // Handle call end
-    socket.on("call-end", ({ roomId }) => {
+    socket.on("call-end", ({ roomId }: { roomId: string }) => {
       if (!roomId) {
         console.error("Invalid call-end data");
         return;
@@ -145,6 +172,17 @@ function initializeSocket(io: Server) {
 
       console.log(`⏹ Call ended in room: ${roomId}`);
       io.to(roomId).emit("call-end", { roomId });
+    });
+
+    // Handle call rejection
+    socket.on("call-rejected", ({ callerId, message }) => {
+      if (!callerId || !message) {
+        console.error("Invalid call-rejected data");
+        return;
+      }
+
+      console.log(`🚫 Call rejected by callee. Notifying callerId=${callerId}`);
+      io.to(callerId).emit("call-rejected", { message });
     });
 
     // Handle user disconnection
@@ -159,6 +197,10 @@ function initializeSocket(io: Server) {
         console.log(`👤 User ${userId} left`);
         // Notify other users in the room
         io.emit("user-left", { userId });
+        io.emit("call-rejected", {
+          callerId: userId,
+          message: "The user disconnected.",
+        });
       }
     });
   });
